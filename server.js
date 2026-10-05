@@ -1,102 +1,21 @@
-const express = require("express");
-const http = require("http");
-const path = require("path");
-const crypto = require("crypto");
-const { Server } = require("socket.io");
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-const PORT = process.env.PORT || 3000;
-
-app.use(express.static(path.join(__dirname, "public")));
-
-const rooms = new Map();
-
-function makeRoomId() {
-  let id;
-  do { id = crypto.randomBytes(3).toString("hex").toUpperCase(); }
-  while (rooms.has(id));
-  return id;
-}
-
-function publicRoom(room) {
-  return {
-    id: room.id,
-    phase: room.phase,
-    hostId: room.hostId,
-    players: [...room.players.values()].map(p => ({
-      id: p.id, name: p.name, alive: p.alive, ready: p.ready
-    }))
-  };
-}
-
-io.on("connection", socket => {
-  socket.on("createRoom", ({ name }) => {
-    const id = makeRoomId();
-    const room = {
-      id, hostId: socket.id, phase: "waiting",
-      players: new Map()
-    };
-    room.players.set(socket.id, {
-      id: socket.id, name: String(name || "GM").slice(0, 20),
-      alive: true, ready: false
-    });
-    rooms.set(id, room);
-    socket.join(id);
-    socket.roomId = id;
-    socket.emit("roomCreated", { roomId: id });
-    io.to(id).emit("roomState", publicRoom(room));
-  });
-
-  socket.on("joinRoom", ({ roomId, name }) => {
-    const id = String(roomId || "").toUpperCase();
-    const room = rooms.get(id);
-    if (!room) return socket.emit("errorMessage", "そのルームは存在しません。");
-    if (room.phase !== "waiting") return socket.emit("errorMessage", "このゲームはすでに開始されています。");
-    if (room.players.size >= 20) return socket.emit("errorMessage", "このルームは満員です。");
-
-    room.players.set(socket.id, {
-      id: socket.id, name: String(name || "プレイヤー").slice(0, 20),
-      alive: true, ready: false
-    });
-    socket.join(id);
-    socket.roomId = id;
-    socket.emit("joinedRoom", { roomId: id });
-    io.to(id).emit("roomState", publicRoom(room));
-  });
-
-  socket.on("toggleReady", () => {
-    const room = rooms.get(socket.roomId);
-    if (!room || !room.players.has(socket.id)) return;
-    room.players.get(socket.id).ready = !room.players.get(socket.id).ready;
-    io.to(room.id).emit("roomState", publicRoom(room));
-  });
-
-  socket.on("startGame", () => {
-    const room = rooms.get(socket.roomId);
-    if (!room || room.hostId !== socket.id) return;
-    if (room.players.size < 4) return socket.emit("errorMessage", "ゲーム開始には4人以上必要です。");
-    room.phase = "night";
-    io.to(room.id).emit("gameStarted");
-    io.to(room.id).emit("roomState", publicRoom(room));
-  });
-
-  socket.on("disconnect", () => {
-    const id = socket.roomId;
-    if (!id || !rooms.has(id)) return;
-    const room = rooms.get(id);
-    room.players.delete(socket.id);
-
-    if (room.hostId === socket.id) {
-      const next = room.players.values().next().value;
-      room.hostId = next ? next.id : null;
-    }
-    if (room.players.size === 0) rooms.delete(id);
-    else io.to(id).emit("roomState", publicRoom(room));
-  });
-});
-
-server.listen(PORT, () => {
-  console.log(`Werewolf game running on http://localhost:${PORT}`);
-});
+const express=require('express');const http=require('http');const path=require('path');const crypto=require('crypto');const{Server}=require('socket.io');
+const app=express(),server=http.createServer(app),io=new Server(server),PORT=process.env.PORT||3000;app.use(express.static(path.join(__dirname,'public')));const rooms=new Map();
+const teams={市民:'citizen',占い師:'citizen',狩人:'citizen',騎士団:'citizen',霊媒師:'citizen',罠師:'citizen',双子:'citizen',独裁者:'citizen',カウンセラー:'citizen',タフガイ:'citizen',人狼:'wolf',狂人:'wolf',裏切者:'wolf',内通者:'wolf',アンドロイド:'third',妖狐:'fox',恋人:'third',神様:'god'};
+const roleNames=Object.keys(teams);const rid=()=>{let x;do{x=crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(x));return x};const shuffle=a=>{for(let i=a.length-1;i;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
+const alive=r=>[...r.players.values()].filter(p=>p.alive);const team=p=>teams[p.role]||'citizen';
+function pub(r){return{id:r.id,phase:r.phase,day:r.day,hostId:r.hostId,players:[...r.players.values()].map(p=>({id:p.id,name:p.name,alive:p.alive,ready:p.ready})),roleCounts:r.roleCounts}};
+function state(r){io.to(r.id).emit('roomState',pub(r));for(const p of r.players.values()){io.to(p.id).emit('gameState',{phase:r.phase,day:r.day,alive:p.alive,role:p.role||null,team:p.role?team(p):null,players:[...r.players.values()].map(x=>({id:x.id,name:x.name,alive:x.alive}))});}}
+function end(r){let a=alive(r),w=a.filter(p=>team(p)==='wolf').length,f=a.filter(p=>p.role==='妖狐').length;if(a.some(p=>p.role==='神様'))return'神様';if(f&&w===0)return'妖狐';if(w===0)return'市民陣営';if(w>=a.length-w)return'人狼陣営';return null}
+function kill(r,id,reason){let p=r.players.get(id);if(!p||!p.alive)return;if(reason==='wolf'&&p.role==='タフガイ'&&!p.toughUsed){p.toughUsed=true;return}p.alive=false;if(p.pair)for(const q of r.players.values())if(q.pair===p.pair&&q.id!==p.id)q.alive=false}
+function next(r){let win=end(r);if(win){r.phase='result';io.to(r.id).emit('result',{winner:win});state(r);return}r.phase=r.phase==='night'?'day':'night';r.votes={};r.actions={};io.to(r.id).emit('phase',{phase:r.phase,day:r.day});state(r)}
+function resolveNight(r){let a=r.actions||{},guards=new Set(),attack=null,traps=new Set();for(const x of Object.values(a)){if(x.type==='guard')guards.add(x.target);if(x.type==='attack')attack=x.target;if(x.type==='trap')traps.add(x.target)}if(attack&&!guards.has(attack)){if(traps.has(attack)){let wolf=alive(r).find(p=>p.role==='人狼');if(wolf)kill(r,wolf.id,'trap')}else if(r.players.get(attack)?.role!=='妖狐')kill(r,attack,'wolf')}io.to(r.id).emit('nightResult',{dead:[...r.players.values()].filter(p=>!p.alive).map(p=>p.name)});next(r)}
+io.on('connection',s=>{
+s.on('createRoom',({name})=>{let id=rid(),r={id,hostId:s.id,phase:'waiting',day:0,players:new Map(),roleCounts:{市民:1,占い師:1,狩人:1,人狼:2},votes:{},actions:{}};r.players.set(s.id,{id:s.id,name:String(name||'GM').slice(0,20),alive:true,ready:false,connected:true});rooms.set(id,r);s.join(id);s.roomId=id;s.emit('roomCreated',{roomId:id});state(r)});
+s.on('joinRoom',({roomId,name})=>{let r=rooms.get(String(roomId||'').toUpperCase());if(!r)return s.emit('errorMessage','そのルームは存在しません。');if(r.phase!=='waiting')return s.emit('errorMessage','このゲームはすでに開始されています。');if(r.players.size>=20)return s.emit('errorMessage','満員です。');r.players.set(s.id,{id:s.id,name:String(name||'プレイヤー').slice(0,20),alive:true,ready:false,connected:true});s.join(r.id);s.roomId=r.id;s.emit('joinedRoom',{roomId:r.id});state(r)});
+s.on('toggleReady',()=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!p)return;p.ready=!p.ready;state(r)});
+s.on('setRoleCounts',c=>{let r=rooms.get(s.roomId);if(!r||r.hostId!==s.id||r.phase!=='waiting')return;let out={};for(let role of roleNames){let n=Math.max(0,Math.min(20,Number(c?.[role])||0));if(n)out[role]=n}let total=Object.values(out).reduce((a,b)=>a+b,0);if(total>r.players.size)return s.emit('errorMessage','役職数が参加人数を超えています。');if(total<r.players.size)out.市民=(out.市民||0)+r.players.size-total;r.roleCounts=out;state(r)});
+s.on('startGame',()=>{let r=rooms.get(s.roomId);if(!r||r.hostId!==s.id)return;if(r.players.size<4)return s.emit('errorMessage','4人以上で開始できます。');let deck=[];for(let [role,n]of Object.entries(r.roleCounts))for(let i=0;i<n;i++)deck.push(role);if(deck.length!==r.players.size)return s.emit('errorMessage','役職数と参加人数が一致していません。');shuffle(deck);[...r.players.values()].forEach((p,i)=>{p.role=deck[i];p.alive=true});let twins=[...r.players.values()].filter(p=>p.role==='双子');if(twins.length>=2){let g=crypto.randomUUID();twins.forEach(p=>p.pair=g)}let lovers=[...r.players.values()].filter(p=>p.role==='恋人');if(lovers.length>=2){let g=crypto.randomUUID();lovers.forEach(p=>p.pair=g)}r.phase='night';r.day=1;r.actions={};s.emit('gameStarted');state(r)});
+s.on('nightAction',({type,target})=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!r||r.phase!=='night'||!p?.alive||!r.players.get(target)?.alive)return;let ok={divine:'占い師',guard:'狩人',knight:'騎士団',trap:'罠師',counsel:'カウンセラー',attack:'人狼'}[type];if(p.role!==ok)return;if(type==='divine'){let t=r.players.get(target);s.emit('abilityResult',{text:`${t.name}: ${t.role==='人狼'?'人狼':'人狼ではない'}`});if(t.role==='妖狐')kill(r,target,'divine')}else r.actions[s.id]={type,target};let acting=alive(r).filter(x=>['人狼','狩人','騎士団','罠師'].includes(x.role));if(acting.every(x=>r.actions[x.id]))resolveNight(r)});
+s.on('vote',({target})=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!r||r.phase!=='day'||!p?.alive||!r.players.get(target)?.alive)return;r.votes[s.id]=target;if(alive(r).every(x=>r.votes[x.id])){let c={};Object.values(r.votes).forEach(x=>c[x]=(c[x]||0)+1);let m=Math.max(...Object.values(c)),tops=Object.keys(c).filter(x=>c[x]===m),id=tops[Math.floor(Math.random()*tops.length)];kill(r,id,'vote');io.to(r.id).emit('voteResult',{name:r.players.get(id)?.name});next(r)}});
+s.on('disconnect',()=>{let r=rooms.get(s.roomId);if(!r)return;if(r.phase==='waiting')r.players.delete(s.id);else{let p=r.players.get(s.id);if(p)p.connected=false}if(r.hostId===s.id){let n=[...r.players.values()].find(p=>p.connected);if(n)r.hostId=n.id}if(r.players.size)state(r);else rooms.delete(r.id)})});
+server.listen(PORT,()=>console.log('URL Werewolf running on '+PORT));
