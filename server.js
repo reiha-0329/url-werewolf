@@ -1,21 +1,300 @@
-const express=require('express');const http=require('http');const path=require('path');const crypto=require('crypto');const{Server}=require('socket.io');
-const app=express(),server=http.createServer(app),io=new Server(server),PORT=process.env.PORT||3000;app.use(express.static(path.join(__dirname,'public')));const rooms=new Map();
-const teams={市民:'citizen',占い師:'citizen',狩人:'citizen',騎士団:'citizen',霊媒師:'citizen',罠師:'citizen',双子:'citizen',独裁者:'citizen',カウンセラー:'citizen',タフガイ:'citizen',人狼:'wolf',狂人:'wolf',裏切者:'wolf',内通者:'wolf',アンドロイド:'third',妖狐:'fox',恋人:'third',神様:'god'};
-const roleNames=Object.keys(teams);const rid=()=>{let x;do{x=crypto.randomBytes(3).toString('hex').toUpperCase()}while(rooms.has(x));return x};const shuffle=a=>{for(let i=a.length-1;i;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
-const alive=r=>[...r.players.values()].filter(p=>p.alive);const team=p=>teams[p.role]||'citizen';
-function pub(r){return{id:r.id,phase:r.phase,day:r.day,hostId:r.hostId,players:[...r.players.values()].map(p=>({id:p.id,name:p.name,alive:p.alive,ready:p.ready})),roleCounts:r.roleCounts}};
-function state(r){io.to(r.id).emit('roomState',pub(r));for(const p of r.players.values()){io.to(p.id).emit('gameState',{phase:r.phase,day:r.day,alive:p.alive,role:p.role||null,team:p.role?team(p):null,players:[...r.players.values()].map(x=>({id:x.id,name:x.name,alive:x.alive}))});}}
-function end(r){let a=alive(r),w=a.filter(p=>team(p)==='wolf').length,f=a.filter(p=>p.role==='妖狐').length;if(a.some(p=>p.role==='神様'))return'神様';if(f&&w===0)return'妖狐';if(w===0)return'市民陣営';if(w>=a.length-w)return'人狼陣営';return null}
-function kill(r,id,reason){let p=r.players.get(id);if(!p||!p.alive)return;if(reason==='wolf'&&p.role==='タフガイ'&&!p.toughUsed){p.toughUsed=true;return}p.alive=false;if(p.pair)for(const q of r.players.values())if(q.pair===p.pair&&q.id!==p.id)q.alive=false}
-function next(r){let win=end(r);if(win){r.phase='result';io.to(r.id).emit('result',{winner:win});state(r);return}r.phase=r.phase==='night'?'day':'night';r.votes={};r.actions={};io.to(r.id).emit('phase',{phase:r.phase,day:r.day});state(r)}
-function resolveNight(r){let a=r.actions||{},guards=new Set(),attack=null,traps=new Set();for(const x of Object.values(a)){if(x.type==='guard')guards.add(x.target);if(x.type==='attack')attack=x.target;if(x.type==='trap')traps.add(x.target)}if(attack&&!guards.has(attack)){if(traps.has(attack)){let wolf=alive(r).find(p=>p.role==='人狼');if(wolf)kill(r,wolf.id,'trap')}else if(r.players.get(attack)?.role!=='妖狐')kill(r,attack,'wolf')}io.to(r.id).emit('nightResult',{dead:[...r.players.values()].filter(p=>!p.alive).map(p=>p.name)});next(r)}
-io.on('connection',s=>{
-s.on('createRoom',({name})=>{let id=rid(),r={id,hostId:s.id,phase:'waiting',day:0,players:new Map(),roleCounts:{市民:1,占い師:1,狩人:1,人狼:2},votes:{},actions:{}};r.players.set(s.id,{id:s.id,name:String(name||'GM').slice(0,20),alive:true,ready:false,connected:true});rooms.set(id,r);s.join(id);s.roomId=id;s.emit('roomCreated',{roomId:id});state(r)});
-s.on('joinRoom',({roomId,name})=>{let r=rooms.get(String(roomId||'').toUpperCase());if(!r)return s.emit('errorMessage','そのルームは存在しません。');if(r.phase!=='waiting')return s.emit('errorMessage','このゲームはすでに開始されています。');if(r.players.size>=20)return s.emit('errorMessage','満員です。');r.players.set(s.id,{id:s.id,name:String(name||'プレイヤー').slice(0,20),alive:true,ready:false,connected:true});s.join(r.id);s.roomId=r.id;s.emit('joinedRoom',{roomId:r.id});state(r)});
-s.on('toggleReady',()=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!p)return;p.ready=!p.ready;state(r)});
-s.on('setRoleCounts',c=>{let r=rooms.get(s.roomId);if(!r||r.hostId!==s.id||r.phase!=='waiting')return;let out={};for(let role of roleNames){let n=Math.max(0,Math.min(20,Number(c?.[role])||0));if(n)out[role]=n}let total=Object.values(out).reduce((a,b)=>a+b,0);if(total>r.players.size)return s.emit('errorMessage','役職数が参加人数を超えています。');if(total<r.players.size)out.市民=(out.市民||0)+r.players.size-total;r.roleCounts=out;state(r)});
-s.on('startGame',()=>{let r=rooms.get(s.roomId);if(!r||r.hostId!==s.id)return;if(r.players.size<4)return s.emit('errorMessage','4人以上で開始できます。');let deck=[];for(let [role,n]of Object.entries(r.roleCounts))for(let i=0;i<n;i++)deck.push(role);if(deck.length!==r.players.size)return s.emit('errorMessage','役職数と参加人数が一致していません。');shuffle(deck);[...r.players.values()].forEach((p,i)=>{p.role=deck[i];p.alive=true});let twins=[...r.players.values()].filter(p=>p.role==='双子');if(twins.length>=2){let g=crypto.randomUUID();twins.forEach(p=>p.pair=g)}let lovers=[...r.players.values()].filter(p=>p.role==='恋人');if(lovers.length>=2){let g=crypto.randomUUID();lovers.forEach(p=>p.pair=g)}r.phase='night';r.day=1;r.actions={};s.emit('gameStarted');state(r)});
-s.on('nightAction',({type,target})=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!r||r.phase!=='night'||!p?.alive||!r.players.get(target)?.alive)return;let ok={divine:'占い師',guard:'狩人',knight:'騎士団',trap:'罠師',counsel:'カウンセラー',attack:'人狼'}[type];if(p.role!==ok)return;if(type==='divine'){let t=r.players.get(target);s.emit('abilityResult',{text:`${t.name}: ${t.role==='人狼'?'人狼':'人狼ではない'}`});if(t.role==='妖狐')kill(r,target,'divine')}else r.actions[s.id]={type,target};let acting=alive(r).filter(x=>['人狼','狩人','騎士団','罠師'].includes(x.role));if(acting.every(x=>r.actions[x.id]))resolveNight(r)});
-s.on('vote',({target})=>{let r=rooms.get(s.roomId),p=r?.players.get(s.id);if(!r||r.phase!=='day'||!p?.alive||!r.players.get(target)?.alive)return;r.votes[s.id]=target;if(alive(r).every(x=>r.votes[x.id])){let c={};Object.values(r.votes).forEach(x=>c[x]=(c[x]||0)+1);let m=Math.max(...Object.values(c)),tops=Object.keys(c).filter(x=>c[x]===m),id=tops[Math.floor(Math.random()*tops.length)];kill(r,id,'vote');io.to(r.id).emit('voteResult',{name:r.players.get(id)?.name});next(r)}});
-s.on('disconnect',()=>{let r=rooms.get(s.roomId);if(!r)return;if(r.phase==='waiting')r.players.delete(s.id);else{let p=r.players.get(s.id);if(p)p.connected=false}if(r.hostId===s.id){let n=[...r.players.values()].find(p=>p.connected);if(n)r.hostId=n.id}if(r.players.size)state(r);else rooms.delete(r.id)})});
-server.listen(PORT,()=>console.log('URL Werewolf running on '+PORT));
+
+const express = require("express");
+const http = require("http");
+const path = require("path");
+const crypto = require("crypto");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static(path.join(__dirname, "public")));
+
+const rooms = new Map();
+
+const ROLE_INFO = {
+  "市民": { team: "市民陣営", desc: "特別な能力を持たない。" },
+  "占い師": { team: "市民陣営", desc: "夜に1人を占い、人狼かどうかを知る。妖狐を占うと妖狐は死亡する。" },
+  "狩人": { team: "市民陣営", desc: "夜に1人を護衛する。同じ人を連続では護衛できない。" },
+  "騎士団": { team: "市民陣営", desc: "夜に1人を護衛する。連続して同じ人も護衛できる。" },
+  "霊媒師": { team: "市民陣営", desc: "処刑されたプレイヤーの陣営を知る。" },
+  "罠師": { team: "市民陣営", desc: "夜に1人へ罠を仕掛け、襲撃された場合に人狼を返り討ちにする。" },
+  "双子": { team: "市民陣営", desc: "双子同士がお互いを知る。片方が死亡するともう片方も死亡する。" },
+  "独裁者": { team: "市民陣営", desc: "特殊な投票権を持つ役職。詳細なルールは今後設定可能。" },
+  "カウンセラー": { team: "市民陣営", desc: "夜に裏切者を選ぶと市民へ変える。" },
+  "タフガイ": { team: "市民陣営", desc: "人狼の襲撃を1回だけ耐える。" },
+  "人狼": { team: "人狼陣営", desc: "夜に人狼同士で相談して1人を襲撃する。" },
+  "狂人": { team: "人狼陣営", desc: "人狼陣営だが人狼ではない。" },
+  "裏切者": { team: "人狼陣営", desc: "人狼陣営。カウンセラーに選ばれると市民になる。" },
+  "内通者": { team: "人狼陣営", desc: "人狼を支援し、人狼と情報を共有する。" },
+  "アンドロイド": { team: "第三陣営", desc: "開始時に指定したプレイヤーの役職を受け継ぐ。指定対象が死亡すると死亡する。" },
+  "妖狐": { team: "第三陣営", desc: "人狼の襲撃では死亡しない。占われると死亡する。" },
+  "恋人": { team: "第三陣営", desc: "恋人同士を知る。片方が死亡するともう片方も死亡する。" },
+  "神様": { team: "第三陣営", desc: "全員の役職を見ることができる。ゲーム終了時に生存していれば勝利。" }
+};
+
+function makeRoomId() {
+  let id;
+  do { id = crypto.randomBytes(3).toString("hex").toUpperCase(); }
+  while (rooms.has(id));
+  return id;
+}
+
+function publicRoom(room) {
+  return {
+    id: room.id,
+    phase: room.phase,
+    hostId: room.hostId,
+    day: room.day,
+    players: [...room.players.values()].map(p => ({
+      id: p.id, name: p.name, alive: p.alive, ready: p.ready
+    }))
+  };
+}
+
+function sendRoom(room) {
+  io.to(room.id).emit("roomState", publicRoom(room));
+}
+
+function shuffle(a) {
+  return [...a].sort(() => Math.random() - 0.5);
+}
+
+function roleSetup(count) {
+  // Default setup. GM can later be given a role-count editor without changing the room system.
+  const list = [];
+  const wolves = Math.max(1, Math.floor(count / 4));
+  for (let i = 0; i < wolves; i++) list.push("人狼");
+  if (count >= 7) list.push("占い師");
+  if (count >= 6) list.push("狩人");
+  if (count >= 8) list.push("霊媒師");
+  while (list.length < count) list.push("市民");
+  return shuffle(list).slice(0, count);
+}
+
+function privateGameState(room, player) {
+  const me = room.players.get(player.id);
+  if (!me) return null;
+  const result = {
+    phase: room.phase,
+    day: room.day,
+    me: { id: me.id, name: me.name, alive: me.alive, role: me.role, team: ROLE_INFO[me.role]?.team || "" },
+    players: [...room.players.values()].map(p => ({
+      id: p.id, name: p.name, alive: p.alive
+    })),
+    message: room.message || ""
+  };
+  if (me.role === "神様") {
+    result.roles = [...room.players.values()].map(p => ({id:p.id, name:p.name, role:p.role}));
+  }
+  if (me.role === "人狼" || me.role === "内通者") {
+    result.wolves = [...room.players.values()].filter(p => ["人狼","内通者"].includes(p.role)).map(p => ({id:p.id,name:p.name,role:p.role}));
+  }
+  return result;
+}
+
+function sendGame(room) {
+  for (const p of room.players.values()) {
+    io.to(p.id).emit("gameState", privateGameState(room, p));
+  }
+}
+
+function eliminate(room, id) {
+  const p = room.players.get(id);
+  if (!p || !p.alive) return;
+  p.alive = false;
+  // Lovers and twins are linked.
+  if (p.role === "恋人" || p.role === "双子") {
+    for (const q of room.players.values()) {
+      if (q.id !== p.id && q.alive && q.role === p.role) q.alive = false;
+    }
+  }
+  // Android dies when its designated target dies.
+  if (room.androidTarget === id && room.androidId) {
+    const a = room.players.get(room.androidId);
+    if (a) a.alive = false;
+  }
+}
+
+function checkWinner(room) {
+  const alive = [...room.players.values()].filter(p => p.alive);
+  const wolves = alive.filter(p => p.role === "人狼").length;
+  const nonWolves = alive.length - wolves;
+  if (alive.some(p => p.role === "神様") && room.phase === "ended") return "神様";
+  if (alive.some(p => p.role === "妖狐") && wolves === 0) return "妖狐";
+  if (wolves === 0) return "市民陣営";
+  if (wolves >= nonWolves) return "人狼陣営";
+  return null;
+}
+
+io.on("connection", socket => {
+  socket.on("createRoom", ({ name }) => {
+    const id = makeRoomId();
+    const room = {
+      id, hostId: socket.id, phase: "waiting", day: 0,
+      players: new Map(), votes: new Map(), nightActions: new Map(),
+      message: "参加者が集まるのを待っています。"
+    };
+    room.players.set(socket.id, {
+      id: socket.id, name: String(name || "GM").slice(0,20),
+      alive: true, ready: false, role: null
+    });
+    rooms.set(id, room);
+    socket.join(id); socket.roomId = id;
+    socket.emit("roomCreated", { roomId:id });
+    sendRoom(room);
+  });
+
+  socket.on("joinRoom", ({ roomId, name }) => {
+    const id = String(roomId || "").toUpperCase();
+    const room = rooms.get(id);
+    if (!room) return socket.emit("errorMessage", "そのルームは存在しません。");
+    if (room.phase !== "waiting") return socket.emit("errorMessage", "このゲームはすでに開始されています。");
+    if (room.players.size >= 20) return socket.emit("errorMessage", "このルームは満員です。");
+    room.players.set(socket.id, {
+      id: socket.id, name: String(name || "プレイヤー").slice(0,20),
+      alive: true, ready: false, role: null
+    });
+    socket.join(id); socket.roomId = id;
+    socket.emit("joinedRoom", { roomId:id });
+    sendRoom(room);
+  });
+
+  socket.on("toggleReady", () => {
+    const room = rooms.get(socket.roomId);
+    const p = room?.players.get(socket.id);
+    if (!p || room.phase !== "waiting") return;
+    p.ready = !p.ready;
+    sendRoom(room);
+  });
+
+  socket.on("startGame", () => {
+    const room = rooms.get(socket.roomId);
+    if (!room || room.hostId !== socket.id || room.phase !== "waiting") return;
+    if (room.players.size < 4) return socket.emit("errorMessage", "ゲーム開始には4人以上必要です。");
+
+    const ids = [...room.players.keys()];
+    const roles = roleSetup(ids.length);
+    ids.forEach((id, i) => room.players.get(id).role = roles[i]);
+    room.day = 1;
+    room.phase = "night";
+    room.message = "夜になりました。役職を確認して能力を使ってください。";
+    sendRoom(room); sendGame(room);
+    io.to(room.id).emit("gameStarted");
+  });
+
+  socket.on("nightAction", ({ targetId }) => {
+    const room = rooms.get(socket.roomId);
+    const p = room?.players.get(socket.id);
+    const target = room?.players.get(targetId);
+    if (!room || !p || !target || room.phase !== "night" || !p.alive) return;
+    const active = ["占い師","狩人","騎士団","罠師","カウンセラー","人狼","内通者"];
+    if (!active.includes(p.role)) return;
+    room.nightActions.set(socket.id, targetId);
+
+    const actors = [...room.players.values()].filter(x => x.alive && active.includes(x.role));
+    if (room.nightActions.size >= actors.length) resolveNight(room);
+    else sendGame(room);
+  });
+
+  socket.on("vote", ({ targetId }) => {
+    const room = rooms.get(socket.roomId);
+    const p = room?.players.get(socket.id);
+    const target = room?.players.get(targetId);
+    if (!room || !p || !target || room.phase !== "day" || !p.alive) return;
+    room.votes.set(socket.id, targetId);
+    const voters = [...room.players.values()].filter(x => x.alive);
+    if (room.votes.size >= voters.length) resolveVote(room);
+    else sendGame(room);
+  });
+
+  function resolveNight(room) {
+    const alive = [...room.players.values()].filter(p => p.alive);
+    const wolf = alive.find(p => p.role === "人狼");
+    const attackTargetId = wolf ? room.nightActions.get(wolf.id) : null;
+    const guarded = new Set(
+      alive.filter(p => ["狩人","騎士団"].includes(p.role))
+        .map(p => room.nightActions.get(p.id)).filter(Boolean)
+    );
+    const trapped = new Set(
+      alive.filter(p => p.role === "罠師").map(p => room.nightActions.get(p.id)).filter(Boolean)
+    );
+
+    if (attackTargetId) {
+      const target = room.players.get(attackTargetId);
+      if (target && !guarded.has(attackTargetId) && target.role !== "妖狐") {
+        if (target.role === "タフガイ" && !target.toughUsed) target.toughUsed = true;
+        else if (trapped.has(attackTargetId) && wolf) eliminate(room, wolf.id);
+        else eliminate(room, attackTargetId);
+      }
+    }
+
+    // Fortune telling.
+    for (const p of alive.filter(x => x.role === "占い師")) {
+      const tid = room.nightActions.get(p.id), t = room.players.get(tid);
+      if (!t) continue;
+      const result = t.role === "人狼" ? "人狼" : "人狼ではない";
+      if (t.role === "妖狐") eliminate(room, t.id);
+      io.to(p.id).emit("privateNotice", `${t.name}さんは「${result}」です。`);
+    }
+
+    // Counselor converts betrayer.
+    for (const p of alive.filter(x => x.role === "カウンセラー")) {
+      const t = room.players.get(room.nightActions.get(p.id));
+      if (t && t.role === "裏切者") {
+        t.role = "市民";
+        io.to(p.id).emit("privateNotice", `${t.name}さんを市民に戻しました。`);
+      }
+    }
+
+    room.nightActions.clear();
+    room.votes.clear();
+    room.phase = "day";
+    room.message = "昼になりました。話し合って、処刑するプレイヤーに投票してください。";
+    sendRoom(room); sendGame(room);
+  }
+
+  function resolveVote(room) {
+    const counts = new Map();
+    for (const id of room.votes.values()) counts.set(id, (counts.get(id)||0)+1);
+    let max = 0, selected = null, tie = false;
+    for (const [id,n] of counts) {
+      if (n > max) { max=n; selected=id; tie=false; }
+      else if (n === max) tie=true;
+    }
+    if (!tie && selected) {
+      eliminate(room, selected);
+      const dead = room.players.get(selected);
+      room.message = `${dead.name}さんが処刑されました。`;
+    } else room.message = "同数票のため、今回は処刑されませんでした。";
+
+    const winner = checkWinner(room);
+    room.votes.clear();
+    if (winner) {
+      room.phase = "ended";
+      room.message += ` 勝利陣営：${winner}`;
+    } else {
+      room.day++;
+      room.phase = "night";
+      room.message += " 夜になりました。";
+    }
+    sendRoom(room); sendGame(room);
+  }
+
+  socket.on("disconnect", () => {
+    const id = socket.roomId;
+    if (!id || !rooms.has(id)) return;
+    const room = rooms.get(id);
+    room.players.delete(socket.id);
+    if (room.hostId === socket.id) {
+      const next = room.players.values().next().value;
+      room.hostId = next ? next.id : null;
+    }
+    if (room.players.size === 0) rooms.delete(id);
+    else { sendRoom(room); if (room.phase !== "waiting") sendGame(room); }
+  });
+});
+
+server.listen(PORT, () => console.log(`Werewolf game running on port ${PORT}`));
