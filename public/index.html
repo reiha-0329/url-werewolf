@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>URL人狼</title>
+  <link rel="stylesheet" href="/style.css?v=20261006">
+</head>
+<body>
+<main class="container">
+  <header>
+    <div>
+      <p class="eyebrow">ONLINE WEREWOLF</p>
+      <h1>URL人狼</h1>
+      <p class="sub">ルームURLを共有するだけで、友達と人狼ゲーム。</p>
+    </div>
+    <button id="rolesBtn" class="ghost">役職一覧</button>
+  </header>
+
+  <section id="home" class="card">
+    <h2>ゲームに参加</h2>
+    <label>名前<input id="name" maxlength="20" placeholder="例：あお"></label>
+    <div class="grid2">
+      <button id="createBtn" class="primary">新しいルームを作る</button>
+      <div class="join">
+        <input id="roomId" maxlength="6" placeholder="ルームID">
+        <button id="joinBtn">参加する</button>
+      </div>
+    </div>
+    <p id="message" class="message"></p>
+  </section>
+
+  <section id="room" class="card hidden">
+    <div class="roomHead">
+      <div><span class="eyebrow">ROOM</span><h2 id="roomCode">------</h2></div>
+      <button id="copyBtn">参加URLをコピー</button>
+    </div>
+    <p id="shareUrl" class="share"></p>
+    <div class="players"><h3>参加者 <span id="count">0</span>/20</h3><ul id="playerList"></ul></div>
+    <div class="actions">
+      <button id="readyBtn">準備完了</button>
+      <button id="startBtn" class="primary hidden">ゲーム開始</button>
+    </div>
+    <p id="roomMessage" class="message"></p>
+  </section>
+
+  <section id="game" class="card hidden">
+    <div class="gameTop">
+      <div><span class="eyebrow">GAME</span><h2 id="phaseTitle">夜</h2></div>
+      <span id="dayNo" class="badge">1日目</span>
+    </div>
+    <div class="roleBox">
+      <div><span class="eyebrow">YOUR ROLE</span><h2 id="myRole">---</h2><p id="myTeam"></p><p id="roleDesc"></p></div>
+    </div>
+    <p id="gameMessage" class="message"></p>
+    <div id="privateNotice" class="notice hidden"></div>
+    <div id="targets" class="targetGrid"></div>
+    <div id="godRoles" class="players hidden"><h3>全員の役職</h3><ul id="godRoleList"></ul></div>
+  </section>
+</main>
+
+<div id="roleModal" class="modal hidden">
+  <div class="modalBox">
+    <div class="modalHead"><h2>役職一覧</h2><button id="closeRoles">×</button></div>
+    <div id="roleList"></div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
