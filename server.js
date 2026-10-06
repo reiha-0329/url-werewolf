@@ -10,7 +10,13 @@ const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), {
+  extensions: ["html"],
+  index: "index.html",
+  etag: true
+}));
+app.get("/style.css", (req,res)=>res.type("text/css").sendFile(path.join(__dirname,"public","style.css")));
+app.get("/app.js", (req,res)=>res.type("application/javascript").sendFile(path.join(__dirname,"public","app.js")));
 
 const rooms = new Map();
 
