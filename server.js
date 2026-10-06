@@ -138,7 +138,14 @@ io.on("connection",socket=>{
     if(cfg["アンドロイド"]>0 && count<2)return socket.emit("errorMessage","アンドロイドには指定対象が必要です。");
 
     const deck=[]; for(const r of ROLE_NAMES) for(let i=0;i<cfg[r];i++)deck.push(r);
-    const ids=shuffle([...room.players.keys()]);
+
+    // 役職デッキをFisher-Yates方式で完全にシャッフルしてから配布
+    for(let i=deck.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [deck[i],deck[j]]=[deck[j],deck[i]];
+    }
+
+    const ids=[...room.players.keys()];
     ids.forEach((id,i)=>{const p=room.players.get(id);p.role=deck[i];p.dictatorUsed=false;p.originalRole=p.role;p.isAndroid=false;p.alive=true;p.toughUsed=false;p.androidTarget=null;p.androidTargetName=null;p.androidCopiedRole=null});
     room.androidTargets=[];
     const androids=[...room.players.values()].filter(p=>p.originalRole==="アンドロイド");
