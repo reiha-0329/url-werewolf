@@ -20,8 +20,8 @@ const ROLE_INFO = {
   "市民": { team:"市民陣営", desc:"特別な能力を持たない。" },
   "占い師": { team:"市民陣営", desc:"夜に1人を占い、人狼かどうかを知る。妖狐を占うと妖狐は死亡する。" },
   "狩人": { team:"市民陣営", desc:"夜に1人を護衛する。同じ人を連続では護衛できない。" },
-  "騎士団": { team:"市民陣営", desc:"夜に1人を護衛する。連続して同じ人も護衛できる。" },
-  "霊媒師": { team:"市民陣営", desc:"処刑されたプレイヤーの陣営を知る。" },
+  "騎士団": { team:"市民陣営", desc:"騎士団全体で夜に1人を護衛する。連続して同じ人も護衛できる。" },
+  "霊媒師": { team:"市民陣営", desc:"処刑されたプレイヤーと、夜の行動で死亡したプレイヤーの陣営を知る。" },
   "罠師": { team:"市民陣営", desc:"夜に罠を仕掛け、襲撃された場合に人狼を倒す。" },
   "双子": { team:"市民陣営", desc:"双子同士がお互いを知る。片方が死亡するともう片方も死亡する。" },
   "独裁者": { team:"市民陣営", desc:"特殊な投票権を持つ役職。" },
@@ -41,7 +41,11 @@ const ROLE_NAMES = Object.keys(ROLE_INFO);
 function makeRoomId(){
   let id; do{id=crypto.randomBytes(3).toString("hex").toUpperCase()}while(rooms.has(id)); return id;
 }
-function shuffle(a){return [...a].sort(()=>Math.random()-0.5)}
+function shuffle(a){
+  const out=[...a];
+  for(let i=out.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[out[i],out[j]]=[out[j],out[i]];}
+  return out;
+}
 function publicRoom(room){
   return {id:room.id,phase:room.phase,hostId:room.hostId,day:room.day,roleConfig:room.roleConfig,
     players:[...room.players.values()].map(p=>({id:p.id,name:p.name,alive:p.alive,ready:p.ready}))};
@@ -84,13 +88,25 @@ function winner(room){
 function privateState(room,p){
   const me=room.players.get(p.id);
   const out={phase:room.phase,day:room.day,message:room.message||"",
-    submitted:room.nightActions.has(me.id),voted:room.votes.has(me.id),
+    submitted:(room.nightActions.has(me.id) || (me.role==="人狼"&&room.groupActions?.人狼) || (me.role==="騎士団"&&room.groupActions?.騎士団)),voted:room.votes.has(me.id),
     morningLog:room.morningLog||[],defenseLog:room.defenseLog||"",
     me:{id:me.id,name:me.name,alive:me.alive,role:me.role,team:ROLE_INFO[me.role]?.team||"",isAndroid:!!me.isAndroid,isAndroidChoice:me.originalRole==="アンドロイド"&&!me.androidTarget,androidTargetName:me.androidTargetName||null,dictatorUsed:!!me.dictatorUsed},
     players:[...room.players.values()].map(x=>({id:x.id,name:x.name,alive:x.alive}))};
   if(me.role==="神様" || me.isAndroid) out.roles=[...room.players.values()].map(x=>({id:x.id,name:x.name,role:x.role}));
   if(["人狼","内通者"].includes(me.role) && !me.isAndroid) out.wolves=[...room.players.values()].filter(x=>["人狼","内通者"].includes(x.role)).map(x=>({id:x.id,name:x.name,role:x.role}));
   if(me.role==="双子"||me.role==="恋人") out.partners=[...room.players.values()].filter(x=>x.role===me.role).map(x=>({id:x.id,name:x.name}));
+  if(me.id===room.hostId){
+    const living=alive(room);
+    const nightActors=living.map(x=>{
+      let acted="対象外";
+      if(["占い師","狩人","罠師","カウンセラー"].includes(x.role)) acted=room.nightActions.has(x.id)?"行動済み":"未行動";
+      else if(x.role==="人狼") acted=room.groupActions.人狼?"行動済み":"未行動";
+      else if(x.role==="騎士団") acted=room.groupActions.騎士団?"行動済み":"未行動";
+      return {id:x.id,name:x.name,acted};
+    });
+    const voting=living.map(x=>({id:x.id,name:x.name,acted:room.votes.has(x.id)?"投票済み":"未投票"}));
+    out.gmStatus={nightActors,voting};
+  }
   return out;
 }
 function sendGame(room){for(const p of room.players.values())io.to(p.id).emit("gameState",privateState(room,p))}
@@ -98,7 +114,7 @@ function sendGame(room){for(const p of room.players.values())io.to(p.id).emit("g
 io.on("connection",socket=>{
   socket.on("createRoom",({name})=>{
     const id=makeRoomId(), room={id,hostId:socket.id,phase:"waiting",day:0,players:new Map(),
-      roleConfig:{},votes:new Map(),nightActions:new Map(),lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
+      roleConfig:{},votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
     room.players.set(socket.id,{id:socket.id,name:String(name||"GM").slice(0,20),alive:true,ready:false,role:null});
     rooms.set(id,room);socket.join(id);socket.roomId=id;socket.emit("roomCreated",{roomId:id});sendRoom(room);
   });
@@ -138,14 +154,9 @@ io.on("connection",socket=>{
     if(cfg["アンドロイド"]>0 && count<2)return socket.emit("errorMessage","アンドロイドには指定対象が必要です。");
 
     const deck=[]; for(const r of ROLE_NAMES) for(let i=0;i<cfg[r];i++)deck.push(r);
-
-    // 役職デッキをFisher-Yates方式で完全にシャッフルしてから配布
-    for(let i=deck.length-1;i>0;i--){
-      const j=Math.floor(Math.random()*(i+1));
-      [deck[i],deck[j]]=[deck[j],deck[i]];
-    }
-
     const ids=[...room.players.keys()];
+    shuffle(deck);
+    shuffle(ids);
     ids.forEach((id,i)=>{const p=room.players.get(id);p.role=deck[i];p.dictatorUsed=false;p.originalRole=p.role;p.isAndroid=false;p.alive=true;p.toughUsed=false;p.androidTarget=null;p.androidTargetName=null;p.androidCopiedRole=null});
     room.androidTargets=[];
     const androids=[...room.players.values()].filter(p=>p.originalRole==="アンドロイド");
@@ -155,15 +166,43 @@ io.on("connection",socket=>{
     sendRoom(room);sendGame(room);io.to(room.id).emit("gameStarted");
   });
 
+  socket.on("chooseAndroidTarget",({targetId})=>{
+    const room=rooms.get(socket.roomId),p=room?.players.get(socket.id),t=room?.players.get(targetId);
+    if(!room||!p||!t||room.phase!=="androidChoice"||!p.alive||p.originalRole!=="アンドロイド"||p.androidTarget)return;
+    if(t.id===p.id||t.originalRole==="アンドロイド")return socket.emit("errorMessage","そのプレイヤーはコピー先に選べません。");
+    p.androidTarget=t.id;p.androidTargetName=t.name;p.androidCopiedRole=t.role;p.role=t.role;p.isAndroid=true;
+    const all=[...room.players.values()].filter(x=>x.originalRole==="アンドロイド");
+    if(all.every(x=>x.androidTarget)){room.phase="night";room.message="夜になりました。役職を確認して能力を使ってください。";}
+    else room.message="アンドロイドがコピーするプレイヤーを選んでいます。";
+    sendRoom(room);sendGame(room);
+  });
+
   socket.on("nightAction",({targetId})=>{
     const room=rooms.get(socket.roomId),p=room?.players.get(socket.id),t=room?.players.get(targetId);
     if(!room||!p||!t||room.phase!=="night"||!p.alive)return;
-    const active=["占い師","狩人","騎士団","罠師","カウンセラー","人狼","内通者"];
+    const active=["占い師","狩人","騎士団","罠師","カウンセラー","人狼"];
     if(!active.includes(p.role))return;
+    if(t.id===p.id)return socket.emit("errorMessage","自分自身は選択できません。");
     if(p.role==="狩人"&&room.lastGuard===targetId)return socket.emit("errorMessage","狩人は前の夜と同じ人を連続で護衛できません。");
-    room.nightActions.set(socket.id,targetId);
-    const actors=alive(room).filter(x=>active.includes(x.role));
-    if(room.nightActions.size>=actors.length)resolveNight(room); else sendGame(room);
+
+    // 人狼は全員で1つの襲撃先を選ぶ。仲間への投票・選択はできない。
+    if(p.role==="人狼"){
+      if(["人狼","内通者"].includes(t.role))return socket.emit("errorMessage","人狼の仲間は襲撃対象に選べません。");
+      if(room.groupActions.人狼)return;
+      room.groupActions.人狼=targetId;
+    }
+    // 騎士団も団全体で護衛対象を1人だけ選ぶ。
+    else if(p.role==="騎士団"){
+      if(room.groupActions.騎士団)return;
+      room.groupActions.騎士団=targetId;
+    }
+    else room.nightActions.set(socket.id,targetId);
+
+    const actors=alive(room).filter(x=>["占い師","狩人","罠師","カウンセラー"].includes(x.role));
+    const needsWolf=alive(room).some(x=>x.role==="人狼");
+    const needsKnight=alive(room).some(x=>x.role==="騎士団");
+    const done=actors.every(x=>room.nightActions.has(x.id)) && (!needsWolf||room.groupActions.人狼) && (!needsKnight||room.groupActions.騎士団);
+    if(done)resolveNight(room); else sendGame(room);
   });
 
   socket.on("dictatorExecute",({targetId})=>{
@@ -188,18 +227,18 @@ io.on("connection",socket=>{
   function resolveNight(room){
     const before=new Set(alive(room).map(p=>p.id));
     const a=alive(room),wolf=a.find(p=>p.role==="人狼"&&!p.isAndroid),androidWolf=a.find(p=>p.role==="人狼"&&p.isAndroid);
-    const attack=wolf?room.nightActions.get(wolf.id):null;
+    const attack=room.groupActions.人狼 || null;
     const androidAttack=androidWolf?room.nightActions.get(androidWolf.id):null;
-    const guards=new Set(a.filter(p=>["狩人","騎士団"].includes(p.role)).map(p=>room.nightActions.get(p.id)).filter(Boolean));
+    const guards=new Set([room.groupActions.騎士団,...a.filter(p=>p.role==="狩人").map(p=>room.nightActions.get(p.id))].filter(Boolean));
     const traps=new Set(a.filter(p=>p.role==="罠師").map(p=>room.nightActions.get(p.id)).filter(Boolean));
     let defense="今夜は襲撃がありませんでした。";
 
     if(attack){
       const t=room.players.get(attack);
       if(t&&guards.has(attack)) defense="護衛成功。人狼の襲撃は防がれました。";
-      else if(t&&t.role==="妖狐") defense="襲撃はありましたが、妖狐は人狼の襲撃では死亡しません。";
+      else if(t&&t.role==="妖狐") defense="襲撃はありましたが、死亡者は出ませんでした。";
       else if(t&&traps.has(attack)&&wolf){eliminate(room,wolf.id);defense="罠が発動し、人狼が倒れました。";}
-      else if(t&&t.role==="タフガイ"&&!t.toughUsed){t.toughUsed=true;defense="襲撃を受けましたが、タフガイが耐えました。";}
+      else if(t&&t.role==="タフガイ"&&!t.toughUsed){t.toughUsed=true;defense="襲撃はありましたが、死亡者は出ませんでした。";}
       else if(t){eliminate(room,attack);defense="護衛は成功しませんでした。";}
     }
     if(androidAttack){
@@ -221,7 +260,15 @@ io.on("connection",socket=>{
     }
 
     room.lastGuard=a.find(x=>x.role==="狩人")?room.nightActions.get(a.find(x=>x.role==="狩人").id):room.lastGuard;
+    const nightDead=[...room.players.values()].filter(p=>!p.alive&&before.has(p.id));
+    for(const medium of alive(room).filter(x=>x.role==="霊媒師")){
+      for(const dead of nightDead){
+        io.to(medium.id).emit("privateNotice",`${dead.name}さんは「${ROLE_INFO[dead.role]?.team||"不明"}」でした。`);
+      }
+    }
     room.nightActions.clear();
+    room.groupActions.人狼=null;
+    room.groupActions.騎士団=null;
     room.votes.clear();
     room.morningLog=[...room.players.values()].filter(p=>!p.alive&&before.has(p.id)).map(p=>`${p.name}さんが死亡しました。`);
     room.defenseLog=defense;
@@ -253,6 +300,10 @@ io.on("connection",socket=>{
     let max=0,selected=null,tie=false;for(const [id,n] of counts){if(n>max){max=n;selected=id;tie=false}else if(n===max)tie=true}
     if(!tie&&selected){const dead=room.players.get(selected);eliminate(room,selected);room.message=`${dead.name}さんが処刑されました。`;}
     else room.message="同数票のため、今回は処刑されませんでした。";
+    if(!tie&&selected){
+      const medium=alive(room).filter(p=>p.role==="霊媒師");
+      for(const m of medium) io.to(m.id).emit("privateNotice",`${dead.name}さんは「${ROLE_INFO[dead.role]?.team||"不明"}」でした。`);
+    }
     room.votes.clear();const w=winner(room);
     if(w){room.phase="ended";room.message+=` 勝利陣営：${w}`;}
     else{room.day++;room.phase="night";room.message+=" 夜になりました。";}
