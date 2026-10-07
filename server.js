@@ -98,13 +98,15 @@ function privateState(room,p){
   if(me.id===room.hostId){
     const living=alive(room);
     const nightActors=living.map(x=>{
-      let acted="対象外";
-      if(["占い師","狩人","罠師","カウンセラー"].includes(x.role)) acted=room.nightActions.has(x.id)?"行動済み":"未行動";
-      else if(x.role==="人狼") acted=room.groupActions.人狼?"行動済み":"未行動";
-      else if(x.role==="騎士団") acted=room.groupActions.騎士団?"行動済み":"未行動";
+      // 役職による「対象外/未行動」の違いはGMにも表示しない。
+      // 夜行動がない役職は常に✓、必要な役職だけ行動済み✓/未行動×を表示する。
+      let acted="✓";
+      if(["占い師","狩人","罠師","カウンセラー"].includes(x.role)) acted=room.nightActions.has(x.id)?"✓":"×";
+      else if(x.role==="人狼") acted=room.groupActions.人狼?"✓":"×";
+      else if(x.role==="騎士団") acted=room.groupActions.騎士団?"✓":"×";
       return {id:x.id,name:x.name,acted};
     });
-    const voting=living.map(x=>({id:x.id,name:x.name,acted:room.votes.has(x.id)?"投票済み":"未投票"}));
+    const voting=living.map(x=>({id:x.id,name:x.name,acted:room.votes.has(x.id)?"✓":"×"}));
     out.gmStatus={nightActors,voting};
   }
   return out;
@@ -298,17 +300,51 @@ io.on("connection",socket=>{
   function resolveVote(room){
     const counts=new Map();for(const id of room.votes.values())counts.set(id,(counts.get(id)||0)+1);
     let max=0,selected=null,tie=false;for(const [id,n] of counts){if(n>max){max=n;selected=id;tie=false}else if(n===max)tie=true}
-    if(!tie&&selected){const dead=room.players.get(selected);eliminate(room,selected);room.message=`${dead.name}さんが処刑されました。`;}
-    else room.message="同数票のため、今回は処刑されませんでした。";
+    let dead=null;
     if(!tie&&selected){
+      dead=room.players.get(selected);
+      const deadName=dead?.name||"対象者";
+      const deadTeam=dead?ROLE_INFO[dead.role]?.team||"不明":"不明";
+      eliminate(room,selected);
+      room.message=`${deadName}さんが処刑されました。`;
       const medium=alive(room).filter(p=>p.role==="霊媒師");
-      for(const m of medium) io.to(m.id).emit("privateNotice",`${dead.name}さんは「${ROLE_INFO[dead.role]?.team||"不明"}」でした。`);
-    }
+      for(const m of medium) io.to(m.id).emit("privateNotice",`${deadName}さんは「${deadTeam}」でした。`);
+    } else room.message="同数票のため、今回は処刑されませんでした。";
     room.votes.clear();const w=winner(room);
     if(w){room.phase="ended";room.message+=` 勝利陣営：${w}`;}
     else{room.day++;room.phase="night";room.message+=" 夜になりました。";}
     sendRoom(room);sendGame(room);
   }
+
+  socket.on("returnToRoom",()=>{
+    const room=rooms.get(socket.roomId);
+    if(!room||room.hostId!==socket.id||room.phase!=="ended")return;
+    // 同じルーム・同じメンバーで再戦できるように待機状態へ戻す。
+    room.phase="waiting";
+    room.day=0;
+    room.votes.clear();
+    room.nightActions.clear();
+    room.groupActions={人狼:null,騎士団:null};
+    room.lastGuard=null;
+    room.androidTargets=[];
+    room.morningLog=[];
+    room.defenseLog="";
+    room.message="再戦の準備ができました。役職設定を確認してゲームを開始してください。";
+    for(const p of room.players.values()){
+      p.alive=true;
+      p.ready=false;
+      p.role=null;
+      p.dictatorUsed=false;
+      p.originalRole=null;
+      p.isAndroid=false;
+      p.toughUsed=false;
+      p.androidTarget=null;
+      p.androidTargetName=null;
+      p.androidCopiedRole=null;
+    }
+    sendRoom(room);
+    sendGame(room);
+  });
 
   socket.on("disconnect",()=>{
     const id=socket.roomId;if(!id||!rooms.has(id))return;const room=rooms.get(id);
