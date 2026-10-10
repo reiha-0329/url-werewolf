@@ -43,7 +43,7 @@ function makeRoomId(){
 }
 function shuffle(a){
   const out=[...a];
-  for(let i=out.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[out[i],out[j]]=[out[j],out[i]];}
+  for(let i=out.length-1;i>0;i--){const j=crypto.randomInt(i+1);[out[i],out[j]]=[out[j],out[i]];}
   return out;
 }
 function publicRoom(room){
@@ -273,7 +273,8 @@ io.on("connection",socket=>{
     room.groupActions.騎士団=null;
     room.votes.clear();
     room.morningLog=[...room.players.values()].filter(p=>!p.alive&&before.has(p.id)).map(p=>`${p.name}さんが死亡しました。`);
-    room.defenseLog=defense;
+    // 公開画面には護衛・罠・タフガイ・妖狐などの能力結果を出さず、死亡人数だけを表示する。
+    room.defenseLog=`今朝の死亡人数：${room.morningLog.length}人`;
 
     const w=winner(room);
     if(w){room.phase="ended";room.message=`ゲーム終了。勝利陣営：${w}`;}
