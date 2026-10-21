@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>URL人狼</title>
+  <link rel="stylesheet" href="/style.css?v=20261007fix">
+</head>
+<body>
+<main class="container">
+  <header>
+    <div>
+      <p class="eyebrow">ONLINE WEREWOLF</p>
+      <h1>URL人狼</h1>
+      <p class="sub">ルームURLを共有するだけで、友達と人狼ゲーム。</p>
+    </div>
+    <button id="rolesBtn" class="ghost">役職一覧</button>
+  </header>
+
+  <section id="home" class="card">
+    <h2>ゲームに参加</h2>
+    <label>名前<input id="name" maxlength="20" placeholder="例：あお"></label>
+    <div class="grid2">
+      <button id="createBtn" class="primary">新しいルームを作る</button>
+      <div class="join">
+        <input id="roomId" maxlength="6" placeholder="ルームID">
+        <button id="joinBtn">参加する</button>
+      </div>
+    </div>
+    <p id="message" class="message"></p>
+  </section>
+
+  <section id="room" class="card hidden">
+    <div class="roomHead">
+      <div><span class="eyebrow">ROOM</span><h2 id="roomCode">------</h2></div>
+      <button id="copyBtn">参加URLをコピー</button>
+    </div>
+    <p id="shareUrl" class="share"></p>
+    <div class="players"><h3>参加者 <span id="count">0</span>/20</h3><ul id="playerList"></ul></div>
+    <div id="roleSetup" class="roleSetup hidden">
+      <div class="setupHead">
+        <div><span class="eyebrow">GM SETTINGS</span><h3>役職設定</h3></div>
+        <span id="roleTotal" class="badge">合計 0人</span>
+      </div>
+      <p class="setupHint">各役職の人数を設定してください。合計人数は参加者数と同じにします。双子・恋人は2人セットです。</p>
+      <div id="roleConfig"></div>
+      <button id="saveRoles" class="primary">役職設定を保存</button>
+    </div>
+    <div class="actions">
+      <button id="readyBtn">準備完了</button>
+      <button id="startBtn" class="primary hidden">ゲーム開始</button>
+    </div>
+    <p id="roomMessage" class="message"></p>
+  </section>
+
+  <section id="game" class="card hidden">
+    <div class="gameTop">
+      <div><span class="eyebrow">GAME</span><h2 id="phaseTitle">夜</h2></div>
+      <span id="dayNo" class="badge">1日目</span>
+    </div>
+    <div class="roleBox">
+      <div><span class="eyebrow">YOUR ROLE</span><h2 id="myRole">---</h2><p id="myTeam"></p><p id="roleDesc"></p></div>
+    </div>
+    <p id="gameMessage" class="message"></p>
+    <div id="morningResult" class="resultPanel hidden">
+      <div class="resultTitle">朝の結果</div>
+      <h3>死亡ログ</h3><ul id="deathLog" class="logList"></ul>
+      <h3>死亡人数</h3><div id="defenseLog" class="defenseResult"></div>
+      <button id="meetingStartBtn" class="primary hidden">会議を始める</button>
+    </div>
+    <div id="meetingPanel" class="meetingPanel hidden">
+      <div class="resultTitle">会議</div>
+      <p>生存者で話し合って、処刑する候補を決めましょう。</p>
+      <button id="voteStartBtn" class="primary hidden">投票へ進む</button>
+    </div>
+    <div id="votingPanel" class="votingPanel hidden">
+      <div class="resultTitle">投票</div>
+      <p>処刑するプレイヤーを1人選んでください。</p>
+    </div>
+    <div id="privateNotice" class="notice hidden"></div>
+    <div id="targets" class="targetGrid"></div>
+    <div id="godRoles" class="players hidden"><h3>全員の役職</h3><ul id="godRoleList"></ul></div>
+  </section>
+</main>
+
+<div id="roleModal" class="modal hidden">
+  <div class="modalBox">
+    <div class="modalHead"><h2>役職一覧</h2><button id="closeRoles">×</button></div>
+    <div id="roleList"></div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
