@@ -116,7 +116,7 @@ function sendGame(room){for(const p of room.players.values())io.to(p.id).emit("g
 io.on("connection",socket=>{
   socket.on("createRoom",({name})=>{
     const id=makeRoomId(), room={id,hostId:socket.id,phase:"waiting",day:0,players:new Map(),
-      roleConfig:{},votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
+      roleConfig:{},previousRoles:new Map(),votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
     room.players.set(socket.id,{id:socket.id,name:String(name||"GM").slice(0,20),alive:true,ready:false,role:null});
     rooms.set(id,room);socket.join(id);socket.roomId=id;socket.emit("roomCreated",{roomId:id});sendRoom(room);
   });
@@ -155,11 +155,25 @@ io.on("connection",socket=>{
     if(cfg["双子"]===1||cfg["恋人"]===1)return socket.emit("errorMessage","双子と恋人は2人セットで設定してください。");
     if(cfg["アンドロイド"]>0 && count<2)return socket.emit("errorMessage","アンドロイドには指定対象が必要です。");
 
-    const deck=[]; for(const r of ROLE_NAMES) for(let i=0;i<cfg[r];i++)deck.push(r);
+    const deckBase=[]; for(const r of ROLE_NAMES) for(let i=0;i<cfg[r];i++)deckBase.push(r);
+    // プレイヤーの並びは固定し、役職デッキだけを暗号学的乱数でシャッフルする。
+    // これでGMを特別扱いせず、GMにも他の参加者と同じ確率で役職を割り当てる。
     const ids=[...room.players.keys()];
-    shuffle(deck);
-    shuffle(ids);
-    ids.forEach((id,i)=>{const p=room.players.get(id);p.role=deck[i];p.dictatorUsed=false;p.originalRole=p.role;p.isAndroid=false;p.alive=true;p.toughUsed=false;p.androidTarget=null;p.androidTargetName=null;p.androidCopiedRole=null});
+    // 再戦時は同じ人が前回と同じ役職になる人数を最小化する。
+    // 500回試行して最も重複が少ない配列を採用し、初戦は完全ランダム配布になる。
+    let bestDeck=null, bestScore=Infinity;
+    for(let attempt=0;attempt<500;attempt++){
+      const candidate=shuffle(deckBase);
+      let score=0;
+      for(let i=0;i<ids.length;i++){
+        const previous=room.previousRoles.get(ids[i]);
+        if(previous && previous===candidate[i]) score++;
+      }
+      if(score<bestScore){bestScore=score;bestDeck=candidate;}
+      if(score===0)break;
+    }
+    const assigned=bestDeck || shuffle(deckBase);
+    ids.forEach((id,i)=>{const p=room.players.get(id);p.role=assigned[i];p.dictatorUsed=false;p.originalRole=p.role;p.isAndroid=false;p.alive=true;p.toughUsed=false;p.androidTarget=null;p.androidTargetName=null;p.androidCopiedRole=null});
     room.androidTargets=[];
     const androids=[...room.players.values()].filter(p=>p.originalRole==="アンドロイド");
     room.phase=androids.length?"androidChoice":"night";
@@ -320,6 +334,8 @@ io.on("connection",socket=>{
   socket.on("returnToRoom",()=>{
     const room=rooms.get(socket.roomId);
     if(!room||room.hostId!==socket.id||room.phase!=="ended")return;
+    // 次の配役で同じ役職が続く人を減らせるよう、前回の役職を記録。
+    room.previousRoles=new Map([...room.players.values()].filter(p=>p.role).map(p=>[p.id,p.role]));
     // 同じルーム・同じメンバーで再戦できるように待機状態へ戻す。
     room.phase="waiting";
     room.day=0;
