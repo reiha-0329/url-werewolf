@@ -88,7 +88,7 @@ function winner(room){
 function privateState(room,p){
   const me=room.players.get(p.id);
   const out={phase:room.phase,day:room.day,message:room.message||"",
-    submitted:(room.nightActions.has(me.id) || (me.role==="人狼"&&room.groupActions?.人狼) || (me.role==="騎士団"&&room.groupActions?.騎士団)),voted:room.votes.has(me.id),
+    submitted:(room.nightActions.has(me.id) || (me.role==="人狼"&&room.wolfVotes?.has(me.id)) || (me.role==="騎士団"&&room.groupActions?.騎士団)),voted:room.votes.has(me.id),
     morningLog:room.morningLog||[],defenseLog:room.defenseLog||"",
     me:{id:me.id,name:me.name,alive:me.alive,role:me.role,team:ROLE_INFO[me.role]?.team||"",isAndroid:!!me.isAndroid,isAndroidChoice:me.originalRole==="アンドロイド"&&!me.androidTarget,androidTargetName:me.androidTargetName||null,dictatorUsed:!!me.dictatorUsed},
     players:[...room.players.values()].map(x=>({id:x.id,name:x.name,alive:x.alive}))};
@@ -102,7 +102,7 @@ function privateState(room,p){
       // 夜行動がない役職は常に✓、必要な役職だけ行動済み✓/未行動×を表示する。
       let acted="✓";
       if(["占い師","狩人","罠師","カウンセラー"].includes(x.role)) acted=room.nightActions.has(x.id)?"✓":"×";
-      else if(x.role==="人狼") acted=room.groupActions.人狼?"✓":"×";
+      else if(x.role==="人狼") acted=room.wolfVotes.has(x.id)?"✓":"×";
       else if(x.role==="騎士団") acted=room.groupActions.騎士団?"✓":"×";
       return {id:x.id,name:x.name,acted};
     });
@@ -116,7 +116,7 @@ function sendGame(room){for(const p of room.players.values())io.to(p.id).emit("g
 io.on("connection",socket=>{
   socket.on("createRoom",({name})=>{
     const id=makeRoomId(), room={id,hostId:socket.id,phase:"waiting",day:0,players:new Map(),
-      roleConfig:{},previousRoles:new Map(),votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
+      roleConfig:{},previousRoles:new Map(),votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},wolfVotes:new Map(),lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
     room.players.set(socket.id,{id:socket.id,name:String(name||"GM").slice(0,20),alive:true,ready:false,role:null});
     rooms.set(id,room);socket.join(id);socket.roomId=id;socket.emit("roomCreated",{roomId:id});sendRoom(room);
   });
@@ -198,16 +198,16 @@ io.on("connection",socket=>{
     if(!room||!p||!t||room.phase!=="night"||!p.alive)return;
     const active=["占い師","狩人","騎士団","罠師","カウンセラー","人狼"];
     if(!active.includes(p.role))return;
-    if(t.id===p.id)return socket.emit("errorMessage","自分自身は選択できません。");
+    // 自衛可能：狩人・騎士団・罠師。その他の役職は自分自身を選べない。
+    if(t.id===p.id&&! ["狩人","騎士団","罠師"].includes(p.role))return socket.emit("errorMessage","自分自身は選択できません。");
     if(p.role==="狩人"&&room.lastGuard===targetId)return socket.emit("errorMessage","狩人は前の夜と同じ人を連続で護衛できません。");
 
-    // 人狼は全員で1つの襲撃先を選ぶ。仲間への投票・選択はできない。
+    // 人狼は各自で襲撃先に投票し、全員の選択がそろってから最多票を採用する。
     if(p.role==="人狼"){
       if(["人狼","内通者"].includes(t.role))return socket.emit("errorMessage","人狼の仲間は襲撃対象に選べません。");
-      if(room.groupActions.人狼)return;
-      room.groupActions.人狼=targetId;
+      room.wolfVotes.set(socket.id,targetId);
     }
-    // 騎士団も団全体で護衛対象を1人だけ選ぶ。
+    // 騎士団は全体で1人だけを護衛する。最初の団員の選択を共有する。
     else if(p.role==="騎士団"){
       if(room.groupActions.騎士団)return;
       room.groupActions.騎士団=targetId;
@@ -215,9 +215,9 @@ io.on("connection",socket=>{
     else room.nightActions.set(socket.id,targetId);
 
     const actors=alive(room).filter(x=>["占い師","狩人","罠師","カウンセラー"].includes(x.role));
-    const needsWolf=alive(room).some(x=>x.role==="人狼");
+    const wolves=alive(room).filter(x=>x.role==="人狼"&&!x.isAndroid);
     const needsKnight=alive(room).some(x=>x.role==="騎士団");
-    const done=actors.every(x=>room.nightActions.has(x.id)) && (!needsWolf||room.groupActions.人狼) && (!needsKnight||room.groupActions.騎士団);
+    const done=actors.every(x=>room.nightActions.has(x.id)) && wolves.every(x=>room.wolfVotes.has(x.id)) && (!needsKnight||room.groupActions.騎士団);
     if(done)resolveNight(room); else sendGame(room);
   });
 
@@ -243,7 +243,15 @@ io.on("connection",socket=>{
   function resolveNight(room){
     const before=new Set(alive(room).map(p=>p.id));
     const a=alive(room),wolf=a.find(p=>p.role==="人狼"&&!p.isAndroid),androidWolf=a.find(p=>p.role==="人狼"&&p.isAndroid);
-    const attack=room.groupActions.人狼 || null;
+    // 人狼の投票を集計し、最多票の襲撃先を採用。同数なら同点対象からランダムに選ぶ。
+    const wolfCounts=new Map();
+    for(const targetId of room.wolfVotes.values()) wolfCounts.set(targetId,(wolfCounts.get(targetId)||0)+1);
+    let attack=null;
+    if(wolfCounts.size){
+      const maxVotes=Math.max(...wolfCounts.values());
+      const tied=[...wolfCounts.entries()].filter(([,n])=>n===maxVotes).map(([id])=>id);
+      attack=tied[crypto.randomInt(tied.length)];
+    }
     const androidAttack=androidWolf?room.nightActions.get(androidWolf.id):null;
     const guards=new Set([room.groupActions.騎士団,...a.filter(p=>p.role==="狩人").map(p=>room.nightActions.get(p.id))].filter(Boolean));
     const traps=new Set(a.filter(p=>p.role==="罠師").map(p=>room.nightActions.get(p.id)).filter(Boolean));
@@ -285,6 +293,7 @@ io.on("connection",socket=>{
     room.nightActions.clear();
     room.groupActions.人狼=null;
     room.groupActions.騎士団=null;
+    room.wolfVotes.clear();
     room.votes.clear();
     room.morningLog=[...room.players.values()].filter(p=>!p.alive&&before.has(p.id)).map(p=>`${p.name}さんが死亡しました。`);
     // 公開画面には護衛・罠・タフガイ・妖狐などの能力結果を出さず、死亡人数だけを表示する。
@@ -342,6 +351,7 @@ io.on("connection",socket=>{
     room.votes.clear();
     room.nightActions.clear();
     room.groupActions={人狼:null,騎士団:null};
+    room.wolfVotes.clear();
     room.lastGuard=null;
     room.androidTargets=[];
     room.morningLog=[];
