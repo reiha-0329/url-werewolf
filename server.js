@@ -87,14 +87,20 @@ function winner(room){
 }
 function privateState(room,p){
   const me=room.players.get(p.id);
-  const out={phase:room.phase,day:room.day,message:room.message||"",
+  const roleSummary=ROLE_NAMES.map(role=>({role,total:[...room.players.values()].filter(x=>x.role===role).length,alive:[...room.players.values()].filter(x=>x.role===role&&x.alive).length})).filter(x=>x.total>0);
+  const out={phase:room.phase,day:room.day,message:room.message||"",roleSummary,
     submitted:(room.nightActions.has(me.id) || (me.role==="人狼"&&room.wolfVotes?.has(me.id)) || (me.role==="騎士団"&&room.groupActions?.騎士団)),voted:room.votes.has(me.id),
     morningLog:room.morningLog||[],defenseLog:room.defenseLog||"",
     me:{id:me.id,name:me.name,alive:me.alive,role:me.role,team:ROLE_INFO[me.role]?.team||"",isAndroid:!!me.isAndroid,isAndroidChoice:me.originalRole==="アンドロイド"&&!me.androidTarget,androidTargetName:me.androidTargetName||null,dictatorUsed:!!me.dictatorUsed},
     players:[...room.players.values()].map(x=>({id:x.id,name:x.name,alive:x.alive}))};
   if(me.role==="神様" || me.isAndroid) out.roles=[...room.players.values()].map(x=>({id:x.id,name:x.name,role:x.role}));
   if(["人狼","内通者"].includes(me.role) && !me.isAndroid) out.wolves=[...room.players.values()].filter(x=>["人狼","内通者"].includes(x.role)).map(x=>({id:x.id,name:x.name,role:x.role}));
-  if(me.role==="双子"||me.role==="恋人") out.partners=[...room.players.values()].filter(x=>x.role===me.role).map(x=>({id:x.id,name:x.name}));
+  if((me.role==="双子"||me.role==="恋人")&&!me.isAndroid) out.partners=[...room.players.values()].filter(x=>x.role===me.role&&!x.isAndroid).map(x=>({id:x.id,name:x.name}));
+  const chatRoles=["人狼","恋人","双子","騎士団"];
+  if(chatRoles.includes(me.role)&&!me.isAndroid){
+    out.chatChannel=me.role;
+    out.chatMessages=(room.roleChats?.[me.role]||[]).slice(-100);
+  }
   if(me.id===room.hostId){
     const living=alive(room);
     const nightActors=living.map(x=>{
@@ -116,7 +122,7 @@ function sendGame(room){for(const p of room.players.values())io.to(p.id).emit("g
 io.on("connection",socket=>{
   socket.on("createRoom",({name})=>{
     const id=makeRoomId(), room={id,hostId:socket.id,phase:"waiting",day:0,players:new Map(),
-      roleConfig:{},previousRoles:new Map(),votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},wolfVotes:new Map(),lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
+      roleConfig:{},previousRoles:new Map(),votes:new Map(),nightActions:new Map(),groupActions:{人狼:null,騎士団:null},wolfVotes:new Map(),roleChats:{人狼:[],恋人:[],双子:[],騎士団:[]},lastGuard:null,androidTargets:[],morningLog:[],defenseLog:"",message:"参加者が集まるのを待っています。"};
     room.players.set(socket.id,{id:socket.id,name:String(name||"GM").slice(0,20),alive:true,ready:false,role:null});
     rooms.set(id,room);socket.join(id);socket.roomId=id;socket.emit("roomCreated",{roomId:id});sendRoom(room);
   });
@@ -140,6 +146,20 @@ io.on("connection",socket=>{
     if(!room||room.hostId!==socket.id||room.phase!=="waiting")return;
     const clean={}; for(const r of ROLE_NAMES){const n=Number(config?.[r]||0);clean[r]=Number.isInteger(n)&&n>=0?Math.min(n,20):0;}
     room.roleConfig=clean;sendRoom(room);
+  });
+
+  socket.on("roleChatSend",({message})=>{
+    const room=rooms.get(socket.roomId),p=room?.players.get(socket.id);
+    if(!room||!p||room.phase==="waiting"||room.phase==="ended")return;
+    const allowed=["人狼","恋人","双子","騎士団"];
+    if(!allowed.includes(p.role)||p.isAndroid)return;
+    const text=String(message||"").trim().slice(0,300);
+    if(!text)return;
+    const item={name:p.name,text,at:new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})};
+    room.roleChats[p.role] ||= [];
+    room.roleChats[p.role].push(item);
+    if(room.roleChats[p.role].length>100)room.roleChats[p.role].shift();
+    for(const q of room.players.values())if(q.role===p.role&&!q.isAndroid)io.to(q.id).emit("roleChatMessage",{channel:p.role,...item});
   });
 
   socket.on("startGame",()=>{
@@ -175,6 +195,7 @@ io.on("connection",socket=>{
     const assigned=bestDeck || shuffle(deckBase);
     ids.forEach((id,i)=>{const p=room.players.get(id);p.role=assigned[i];p.dictatorUsed=false;p.originalRole=p.role;p.isAndroid=false;p.alive=true;p.toughUsed=false;p.androidTarget=null;p.androidTargetName=null;p.androidCopiedRole=null});
     room.androidTargets=[];
+    room.roleChats={人狼:[],恋人:[],双子:[],騎士団:[]};
     const androids=[...room.players.values()].filter(p=>p.originalRole==="アンドロイド");
     room.phase=androids.length?"androidChoice":"night";
     room.message=androids.length?"アンドロイドがコピーするプレイヤーを選んでいます。":"夜になりました。役職を確認して能力を使ってください.";
@@ -354,6 +375,7 @@ io.on("connection",socket=>{
     room.wolfVotes.clear();
     room.lastGuard=null;
     room.androidTargets=[];
+    room.roleChats={人狼:[],恋人:[],双子:[],騎士団:[]};
     room.morningLog=[];
     room.defenseLog="";
     room.message="再戦の準備ができました。役職設定を確認してゲームを開始してください。";
