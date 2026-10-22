@@ -87,7 +87,7 @@ function winner(room){
 }
 function privateState(room,p){
   const me=room.players.get(p.id);
-  const roleSummary=ROLE_NAMES.map(role=>({role,total:[...room.players.values()].filter(x=>x.role===role).length,alive:[...room.players.values()].filter(x=>x.role===role&&x.alive).length})).filter(x=>x.total>0);
+  const roleSummary=ROLE_NAMES.map(role=>({role,total:[...room.players.values()].filter(x=>x.role===role).length})).filter(x=>x.total>0);
   const out={phase:room.phase,day:room.day,message:room.message||"",roleSummary,
     submitted:(room.nightActions.has(me.id) || (me.role==="人狼"&&room.wolfVotes?.has(me.id)) || (me.role==="騎士団"&&room.groupActions?.騎士団)),voted:room.votes.has(me.id),
     morningLog:room.morningLog||[],defenseLog:room.defenseLog||"",
